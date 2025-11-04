@@ -143,18 +143,37 @@
                     button.innerHTML = '<span class="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full mx-auto"></span>';
                 }
                 try {
-                    const response = await fetch(endpoint, options);
+                    // Ensure same-origin credentials (session cookie) are sent with fetch.
+                    const fetchOptions = Object.assign({}, options);
+                    if (!('credentials' in fetchOptions)) fetchOptions.credentials = 'same-origin';
+                    const response = await fetch(endpoint, fetchOptions);
                     const contentType = response.headers.get("content-type");
                     if (contentType && contentType.includes("application/json")) {
                         const data = await response.json();
-                        if (!response.ok) throw new Error(data.error || 'API error');
+                        if (!response.ok) {
+                            const err = new Error(data.error || 'API error');
+                            err.status = response.status;
+                            throw err;
+                        }
                         return data;
                     } else {
-                        if (!response.ok) throw new Error('Authentication error or server issue.');
+                        if (!response.ok) {
+                            const err = new Error('Server error');
+                            err.status = response.status;
+                            throw err;
+                        }
                         return response;
                     }
                 } catch (error) {
-                    alert(`Error: ${error.message}`);
+                    // Suppress blocking alert popups for non-critical API errors.
+                    // Redirect the user only on explicit 401 Unauthorized responses,
+                    // otherwise log the error to the console for debugging.
+                    if (error && error.status === 401) {
+                        console.warn('Authentication (401) detected, redirecting to login.');
+                        window.location.href = '/';
+                    } else {
+                        console.warn('API call error:', error);
+                    }
                     throw error;
                 } finally {
                     if (button) {
@@ -283,6 +302,8 @@
                         button: e.target.querySelector('button[type="submit"]'), originalText: 'Create Job & Get Link'
                     });
                     linkInput.value = data.interview_link;
+                    // Show a single confirmation popup after successful job creation
+                    alert(data.message || 'Job created successfully.');
                     linkContainer.classList.remove('hidden');
                     setTimeout(() => linkContainer.style.opacity = 1, 50);
                     createJobForm.reset();
