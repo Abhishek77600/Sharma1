@@ -57,10 +57,11 @@ def get_database_url():
         print("WARNING: No DATABASE_URL found. Using default local database for development.")
         return 'postgresql://postgres:postgres@localhost:5432/hiring_platform'
     
-    # Convert postgres:// to postgresql:// (Render uses postgres://)
+    # Handle Render's DATABASE_URL format
     if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql://", 1)
     
+    print(f"Database URL detected: {database_url.split('@')[1] if '@' in database_url else 'local'}")
     return database_url
 
 # Configure SQLAlchemy with better connection handling
@@ -77,11 +78,23 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     }
 }
 
-# Initialize SQLAlchemy
-db = SQLAlchemy(app)
+# Initialize SQLAlchemy with better error handling
+try:
+    print("Initializing database connection...")
+    db = SQLAlchemy(app)
+    print("Database initialization successful")
+except Exception as e:
+    print(f"Error initializing database: {str(e)}")
+    raise
 
-# Print database connection info (helpful for debugging)
-print(f"Connecting to database: {app.config['SQLALCHEMY_DATABASE_URI'].split('@')[1] if '@' in app.config['SQLALCHEMY_DATABASE_URI'] else 'local'}")
+# Verify database connection on startup
+with app.app_context():
+    try:
+        db.session.execute('SELECT 1')
+        print("Database connection test successful!")
+    except Exception as e:
+        print(f"Database connection test failed: {str(e)}")
+        raise
 
 # --- Email Configuration ---
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER')
