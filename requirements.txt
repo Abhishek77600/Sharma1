@@ -6,3 +6,6 @@ python-docx
 gunicorn
 reportlab
 Flask-Mail
+psycopg2-binary
+SQLAlchemy
+Flask-SQLAlchemy

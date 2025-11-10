@@ -47,6 +47,7 @@
                 <div class="bg-gray-900/60 border border-gray-700 p-6 rounded-2xl shadow-xl sticky top-8">
                     <h2 class="text-xl font-bold mb-4 text-white">Create New Job Posting</h2>
                     <form id="create-job-form" class="space-y-4">
+                        <div id="form-error" class="hidden bg-red-900/50 border border-red-700 p-3 rounded-lg text-red-400 text-sm mb-4"></div>
                         <input type="text" id="job-title" placeholder="Job Title" required
                                class="w-full bg-gray-800 border border-gray-600 rounded-md p-3 focus:ring-2 focus:ring-indigo-500"/>
                         <!-- Quick Templates -->
@@ -295,21 +296,38 @@
 
             createJobForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
+                const formError = document.getElementById('form-error');
+                formError.classList.add('hidden');
+                
                 try {
+                    console.log('Creating job...'); // Debug log
                     const data = await apiCall('/api/admin/create_job', {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ title: jobTitleEl.value, description: jobDescriptionEl.value }),
-                        button: e.target.querySelector('button[type="submit"]'), originalText: 'Create Job & Get Link'
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            title: jobTitleEl.value,
+                            description: jobDescriptionEl.value
+                        }),
+                        button: e.target.querySelector('button[type="submit"]'),
+                        originalText: 'Create Job & Get Link'
                     });
-                    linkInput.value = data.interview_link;
-                    // Show a single confirmation popup after successful job creation
-                    alert(data.message || 'Job created successfully.');
-                    linkContainer.classList.remove('hidden');
-                    setTimeout(() => linkContainer.style.opacity = 1, 50);
-                    createJobForm.reset();
-                    jdTemplateButtons.forEach(btn => btn.classList.remove('bg-indigo-500', 'text-white'));
-                    loadDashboard();
-                } catch {}
+                    console.log('Job created:', data); // Debug log
+                    
+                    if (data.job_id) {
+                        linkInput.value = data.interview_link;
+                        linkContainer.classList.remove('hidden');
+                        setTimeout(() => linkContainer.style.opacity = 1, 50);
+                        createJobForm.reset();
+                        jdTemplateButtons.forEach(btn => btn.classList.remove('bg-indigo-500', 'text-white'));
+                        loadDashboard();
+                    } else {
+                        throw new Error('No job ID returned from server');
+                    }
+                } catch (error) {
+                    console.error('Error creating job:', error); // Debug log
+                    formError.textContent = error.message || 'Failed to create job. Please try again.';
+                    formError.classList.remove('hidden');
+                }
             });
 
             loadDashboard();

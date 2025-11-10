@@ -107,8 +107,8 @@
             async function loadData() {
                 try {
                     const [jobs, applications] = await Promise.all([
-                        fetch('/api/jobs').then(res => res.json()),
-                        fetch('/api/candidate/applications').then(res => res.json())
+                        fetch('/api/jobs', { credentials: 'same-origin' }).then(res => res.json()),
+                            fetch('/api/candidate/applications', { credentials: 'same-origin' }).then(res => res.json())
                     ]);
                     
                     jobsContainer.innerHTML = jobs.length
@@ -169,7 +169,7 @@
                 if(e.target.matches('button[data-job-id]')) {
                     const jobId = e.target.dataset.jobId;
                     try {
-                        const jobs = await (await fetch('/api/jobs')).json();
+                        const jobs = await (await fetch('/api/jobs', { credentials: 'same-origin' })).json();
                         const job = jobs.find(j => j.id == jobId);
                         if(job) openModal(job);
                     } catch (error) {
@@ -188,7 +188,7 @@
                 const formData = new FormData();
                 formData.append('file', file);
                 try {
-                    const response = await fetch('/api/extract_text', { method: 'POST', body: formData });
+                    const response = await fetch('/api/extract_text', { method: 'POST', body: formData, credentials: 'same-origin' });
                     const data = await response.json();
                     if (!response.ok) throw new Error(data.error);
                     resumeTextContent = data.text;
@@ -213,6 +213,7 @@
                 try {
                      const response = await fetch(`/api/apply/${selectedJobId}`, {
                         method: 'POST',
+                        credentials: 'same-origin',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ resume_text: resumeTextContent })
                     });

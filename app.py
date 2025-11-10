@@ -1,7 +1,6 @@
 import os
 import io
 import json
-import sqlite3
 from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for
 from werkzeug.security import generate_password_hash, check_password_hash
 import google.generativeai as genai
@@ -14,14 +13,23 @@ from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.colors import navy, black, red
 from flask_mail import Mail, Message
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import create_engine, text
 
 # --- App Configuration ---
 load_dotenv()
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv("FLASK_SECRET_KEY", os.urandom(24))
-DATABASE = 'hiring_platform.db'
 REPORT_FOLDER = 'reports'
 os.makedirs(REPORT_FOLDER, exist_ok=True)
+
+# --- Database Configuration ---
+DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/hiring_platform')
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
 
 # --- Email Configuration ---
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER')
@@ -32,31 +40,46 @@ app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
 app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_DEFAULT_SENDER', app.config['MAIL_USERNAME'])
 mail = Mail(app)
 
-# --- Database Setup ---
-def get_db():
-    conn = sqlite3.connect(DATABASE, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+# --- Database Models ---
+class Admin(db.Model):
+    __tablename__ = 'admins'
+    id = db.Column(db.Integer, primary_key=True)
+    company_name = db.Column(db.String(), nullable=False)
+    email = db.Column(db.String(), unique=True, nullable=False)
+    phone = db.Column(db.String())
+    password = db.Column(db.String(), nullable=False)
+    jobs = db.relationship('Job', backref='admin', lazy=True)
 
-def create_tables():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS admins (id INTEGER PRIMARY KEY, company_name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, phone TEXT, password TEXT NOT NULL)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY, admin_id INTEGER NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, FOREIGN KEY (admin_id) REFERENCES admins (id))''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS applications (
-            id INTEGER PRIMARY KEY, candidate_id INTEGER NOT NULL, job_id INTEGER NOT NULL,
-            resume_text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Applied', shortlist_reason TEXT,
-            report_path TEXT, interview_results TEXT,
-            FOREIGN KEY (candidate_id) REFERENCES candidates (id), FOREIGN KEY (job_id) REFERENCES jobs (id)
-        )
-    ''')
-    conn.commit()
-    conn.close()
+class Candidate(db.Model):
+    __tablename__ = 'candidates'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(), nullable=False)
+    email = db.Column(db.String(), unique=True, nullable=False)
+    password = db.Column(db.String(), nullable=False)
+    applications = db.relationship('Application', backref='candidate', lazy=True)
 
+class Job(db.Model):
+    __tablename__ = 'jobs'
+    id = db.Column(db.Integer, primary_key=True)
+    admin_id = db.Column(db.Integer, db.ForeignKey('admins.id'), nullable=False)
+    title = db.Column(db.String(), nullable=False)
+    description = db.Column(db.Text, nullable=False)
+    applications = db.relationship('Application', backref='job', lazy=True)
+
+class Application(db.Model):
+    __tablename__ = 'applications'
+    id = db.Column(db.Integer, primary_key=True)
+    candidate_id = db.Column(db.Integer, db.ForeignKey('candidates.id'), nullable=False)
+    job_id = db.Column(db.Integer, db.ForeignKey('jobs.id'), nullable=False)
+    resume_text = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(), nullable=False, default='Applied')
+    shortlist_reason = db.Column(db.Text)
+    report_path = db.Column(db.String())
+    interview_results = db.Column(db.Text)
+
+# Create database tables
 with app.app_context():
-    create_tables()
+    db.create_all()
 
 # --- Gemini API Configuration ---
 try:
@@ -87,11 +110,9 @@ def candidate_dashboard():
 
 @app.route('/interview/<int:application_id>')
 def interview_page(application_id):
-    conn = get_db()
-    app_data = conn.execute("SELECT j.title FROM applications a JOIN jobs j ON a.job_id = j.id WHERE a.id = ?", (application_id,)).fetchone()
-    conn.close()
+    app_data = db.session.query(Job.title).join(Application).filter(Application.id == application_id).first()
     if not app_data: return "Interview link is invalid or has expired.", 404
-    return render_template('interview.html', job_title=app_data['title'], application_id=application_id)
+    return render_template('interview.html', job_title=app_data[0], application_id=application_id)
 
 # ==============================================================================
 # AUTHENTICATION API
@@ -99,54 +120,59 @@ def interview_page(application_id):
 @app.route('/api/register/admin', methods=['POST'])
 def register_admin():
     data = request.json
-    hashed_password = generate_password_hash(data['password'])
-    conn = get_db()
     try:
-        conn.execute("INSERT INTO admins (company_name, email, phone, password) VALUES (?, ?, ?, ?)",
-                     (data['company_name'], data['email'], data['phone'], hashed_password))
-        conn.commit()
+        admin = Admin(
+            company_name=data['company_name'],
+            email=data['email'],
+            phone=data['phone'],
+            password=generate_password_hash(data['password'])
+        )
+        db.session.add(admin)
+        db.session.commit()
         return jsonify({'message': 'Registration successful.'})
-    except sqlite3.IntegrityError:
-        return jsonify({'error': 'Email already exists.'}), 409
-    finally: conn.close()
+    except Exception as e:
+        db.session.rollback()
+        if 'unique constraint' in str(e).lower():
+            return jsonify({'error': 'Email already exists.'}), 409
+        return jsonify({'error': 'Registration failed.'}), 500
 
 @app.route('/api/login/admin', methods=['POST'])
 def login_admin():
     data = request.json
-    conn = get_db()
-    admin = conn.execute("SELECT * FROM admins WHERE email = ?", (data['email'],)).fetchone()
-    conn.close()
-    if admin and check_password_hash(admin['password'], data['password']):
+    admin = Admin.query.filter_by(email=data['email']).first()
+    if admin and check_password_hash(admin.password, data['password']):
         session['user_type'] = 'admin'
-        session['admin_id'] = admin['id']
-        session['company_name'] = admin['company_name']
-        return jsonify({'message': 'Login successful.', 'company_name': admin['company_name']})
+        session['admin_id'] = admin.id
+        session['company_name'] = admin.company_name
+        return jsonify({'message': 'Login successful.', 'company_name': admin.company_name})
     return jsonify({'error': 'Invalid credentials.'}), 401
     
 @app.route('/api/register/candidate', methods=['POST'])
 def register_candidate():
     data = request.json
-    hashed_password = generate_password_hash(data['password'])
-    conn = get_db()
     try:
-        conn.execute("INSERT INTO candidates (name, email, password) VALUES (?, ?, ?)",
-                     (data['name'], data['email'], hashed_password))
-        conn.commit()
+        candidate = Candidate(
+            name=data['name'],
+            email=data['email'],
+            password=generate_password_hash(data['password'])
+        )
+        db.session.add(candidate)
+        db.session.commit()
         return jsonify({'message': 'Registration successful.'})
-    except sqlite3.IntegrityError:
-        return jsonify({'error': 'Email already exists.'}), 409
-    finally: conn.close()
+    except Exception as e:
+        db.session.rollback()
+        if 'unique constraint' in str(e).lower():
+            return jsonify({'error': 'Email already exists.'}), 409
+        return jsonify({'error': 'Registration failed.'}), 500
 
 @app.route('/api/login/candidate', methods=['POST'])
 def login_candidate():
     data = request.json
-    conn = get_db()
-    candidate = conn.execute("SELECT * FROM candidates WHERE email = ?", (data['email'],)).fetchone()
-    conn.close()
-    if candidate and check_password_hash(candidate['password'], data['password']):
+    candidate = Candidate.query.filter_by(email=data['email']).first()
+    if candidate and check_password_hash(candidate.password, data['password']):
         session['user_type'] = 'candidate'
-        session['candidate_id'] = candidate['id']
-        session['candidate_name'] = candidate['name']
+        session['candidate_id'] = candidate.id
+        session['candidate_name'] = candidate.name
         return jsonify({'message': 'Login successful.'})
     return jsonify({'error': 'Invalid credentials.'}), 401
 
@@ -169,38 +195,93 @@ def check_session():
 @app.route('/api/admin/jobs')
 def get_admin_jobs():
     if session.get('user_type') != 'admin': return jsonify({'error': 'Unauthorized'}), 401
-    conn = get_db()
-    jobs = conn.execute("SELECT * FROM jobs WHERE admin_id = ? ORDER BY id DESC", (session['admin_id'],)).fetchall()
+    
+    jobs = Job.query.filter_by(admin_id=session['admin_id']).order_by(Job.id.desc()).all()
     data = []
     for job in jobs:
-        job_dict = dict(job)
-        apps = conn.execute("SELECT a.id, a.status, c.name, c.email, a.report_path FROM applications a JOIN candidates c ON a.candidate_id = c.id WHERE a.job_id = ?", (job['id'],)).fetchall()
-        job_dict['applications'] = [dict(app) for app in apps]
+        job_dict = {
+            'id': job.id,
+            'title': job.title,
+            'description': job.description,
+            'admin_id': job.admin_id
+        }
+        applications = db.session.query(
+            Application.id, Application.status, 
+            Candidate.name, Candidate.email, 
+            Application.report_path
+        ).join(Candidate).filter(Application.job_id == job.id).all()
+        job_dict['applications'] = [
+            {
+                'id': app[0],
+                'status': app[1],
+                'name': app[2],
+                'email': app[3],
+                'report_path': app[4]
+            } for app in applications
+        ]
         data.append(job_dict)
-    conn.close()
     return jsonify(data)
 
 @app.route('/api/admin/create_job', methods=['POST'])
 def create_job():
-    if session.get('user_type') != 'admin': return jsonify({'error': 'Unauthorized'}), 401
-    data = request.json
-    conn = get_db()
-    cursor = conn.execute("INSERT INTO jobs (admin_id, title, description) VALUES (?, ?, ?)",
-                          (session['admin_id'], data['title'], data['description']))
-    job_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return jsonify({'message': 'Job created successfully.', 'interview_link': url_for('interview_page', job_id=job_id, _external=True)})
+    print("\n=== Create Job Endpoint Called ===")
+    print(f"Session data: {dict(session)}")
+    
+    if session.get('user_type') != 'admin':
+        print(f"Unauthorized access attempt. User type: {session.get('user_type')}")
+        return jsonify({'error': 'Unauthorized. Please log in as admin.'}), 401
+    
+    if 'admin_id' not in session:
+        print("No admin_id in session")
+        return jsonify({'error': 'Session expired. Please log in again.'}), 401
+    
+    try:
+        if not request.is_json:
+            print("Request is not JSON")
+            return jsonify({'error': 'Invalid request format. Expected JSON.'}), 400
+        
+        data = request.json
+        print(f"Received job data: {data}")
+        print(f"Admin ID from session: {session.get('admin_id')}")
+        
+        if not data.get('title') or not data.get('description'):
+            print("Missing required fields")
+            return jsonify({'error': 'Title and description are required.'}), 400
+        
+        job = Job(
+            admin_id=session['admin_id'],
+            title=data['title'],
+            description=data['description']
+        )
+        
+        print("Adding job to session...")
+        db.session.add(job)
+        print("Committing to database...")
+        db.session.commit()
+        print(f"Job created successfully with ID: {job.id}")
+        
+        interview_link = url_for('interview_page', application_id=job.id, _external=True)
+        return jsonify({
+            'message': 'Job created successfully.',
+            'job_id': job.id,
+            'interview_link': interview_link
+        })
+    except Exception as e:
+        print(f"Error creating job: {str(e)}")
+        db.session.rollback()
+        return jsonify({'error': f'Failed to create job: {str(e)}'}), 500
+    finally:
+        print("=== End Create Job Endpoint ===\n")
     
 @app.route('/api/admin/shortlist/<int:job_id>', methods=['POST'])
 def shortlist_candidates(job_id):
     if session.get('user_type') != 'admin': return jsonify({'error': 'Unauthorized'}), 401
-    conn = get_db()
-    job = conn.execute("SELECT description FROM jobs WHERE id = ? AND admin_id = ?", (job_id, session['admin_id'])).fetchone()
-    applications = conn.execute("SELECT id, resume_text FROM applications WHERE job_id = ? AND status = 'Applied'", (job_id,)).fetchall()
     
-    if not job: conn.close(); return jsonify({'error': 'Job not found'}), 404
-    if not applications: conn.close(); return jsonify({'message': 'No new applications to shortlist.'})
+    job = Job.query.filter_by(id=job_id, admin_id=session['admin_id']).first()
+    if not job: return jsonify({'error': 'Job not found'}), 404
+    
+    applications = Application.query.filter_by(job_id=job_id, status='Applied').all()
+    if not applications: return jsonify({'message': 'No new applications to shortlist.'})
 
     for app in applications:
         prompt = f"""
@@ -208,21 +289,21 @@ def shortlist_candidates(job_id):
         Provide a JSON response with two keys: "shortlisted" (boolean) and "reason" (a brief explanation).
 
         **Job Description:**
-        {job['description']}
+        {job.description}
 
         **Candidate Resume:**
-        {app['resume_text']}
+        {app.resume_text}
         """
         try:
             response = model.generate_content(prompt)
             result = json.loads(response.text.strip().replace('```json', '').replace('```', ''))
             if result.get('shortlisted'):
-                conn.execute("UPDATE applications SET status = 'Shortlisted', shortlist_reason = ? WHERE id = ?", (result.get('reason', ''), app['id']))
+                app.status = 'Shortlisted'
+                app.shortlist_reason = result.get('reason', '')
         except Exception as e:
-            print(f"Error shortlisting application {app['id']}: {e}")
+            print(f"Error shortlisting application {app.id}: {e}")
 
-    conn.commit()
-    conn.close()
+    db.session.commit()
     return jsonify({'message': f'Shortlisting complete for {len(applications)} applications.'})
 
 @app.route('/api/admin/send_invite/<int:application_id>', methods=['POST'])
@@ -230,29 +311,32 @@ def send_invite(application_id):
     if session.get('user_type') != 'admin': return jsonify({'error': 'Unauthorized'}), 401
     if not mail: return jsonify({'error': 'Email server is not configured.'}), 500
     
-    conn = get_db()
-    app_data = conn.execute("SELECT c.email, j.title FROM applications a JOIN candidates c ON a.candidate_id = c.id JOIN jobs j ON a.job_id = j.id WHERE a.id = ?", (application_id,)).fetchone()
-    if not app_data: conn.close(); return jsonify({'error': 'Application not found.'}), 404
+    # Explicitly select from Application and join Candidate and Job to avoid ambiguity
+    app_data = db.session.query(
+        Candidate.email,
+        Job.title
+    ).select_from(Application).join(Candidate).join(Job).filter(Application.id == application_id).first()
+    
+    if not app_data: return jsonify({'error': 'Application not found.'}), 404
     
     interview_link = url_for('interview_page', application_id=application_id, _external=True)
-    subject = f"Interview Invitation for the {app_data['title']} role"
-    body = f"""Dear Candidate,\n\nCongratulations! Your application for the {app_data['title']} position has been shortlisted.\nPlease use the following link to complete your AI-proctored virtual interview:\n{interview_link}\n\nBest of luck!\nThe {session['company_name']} Hiring Team"""
+    subject = f"Interview Invitation for the {app_data.title} role"
+    body = f"""Dear Candidate,\n\nCongratulations! Your application for the {app_data.title} position has been shortlisted.\nPlease use the following link to complete your AI-proctored virtual interview:\n{interview_link}\n\nBest of luck!\nThe {session['company_name']} Hiring Team"""
     try:
-        msg = Message(subject, recipients=[app_data['email']], body=body)
+        msg = Message(subject, recipients=[app_data.email], body=body)
         mail.send(msg)
-        conn.execute("UPDATE applications SET status = 'Invited' WHERE id = ?", (application_id,))
-        conn.commit()
+        application = Application.query.get(application_id)
+        application.status = 'Invited'
+        db.session.commit()
         return jsonify({'message': 'Interview invitation sent.'})
     except Exception as e:
         print(f"MAIL SENDING ERROR: {e}")
         return jsonify({'error': f'Failed to send email: {e}. Check server configuration.'}), 500
-    finally: conn.close()
 
 @app.route('/api/admin/update_status/<int:application_id>', methods=['POST'])
 def update_status(application_id):
     if session.get('user_type') != 'admin': return jsonify({'error': 'Unauthorized'}), 401
     
-    # CORRECTED: Add a check to ensure the request has a valid JSON body
     if not request.is_json:
         return jsonify({'error': 'Invalid request: Content-Type must be application/json.'}), 415
 
@@ -261,32 +345,42 @@ def update_status(application_id):
     if status not in ['Accepted', 'Rejected']: 
         return jsonify({'error': 'Invalid status provided in request body.'}), 400
     
-    conn = get_db()
-    app_data = conn.execute("SELECT c.email, j.title, a.report_path FROM applications a JOIN candidates c ON a.candidate_id = c.id JOIN jobs j ON a.job_id = j.id WHERE a.id = ?", (application_id,)).fetchone()
-    if not app_data: conn.close(); return jsonify({'error': 'Application not found.'}), 404
+    app_data = db.session.query(
+        Candidate.email,
+        Job.title,
+        Application.report_path
+    ).join(Application).join(Job).filter(Application.id == application_id).first()
+    if not app_data: return jsonify({'error': 'Application not found.'}), 404
 
     try:
         if status == 'Accepted' and mail:
             subject = "Update on your application"
-            body = f"Congratulations! We would like to invite you to our office for the next round of interviews for the {app_data['title']} role."
-            msg = Message(subject, recipients=[app_data['email']], body=body)
+            body = f"Congratulations! We would like to invite you to our office for the next round of interviews for the {app_data.title} role."
+            msg = Message(subject, recipients=[app_data.email], body=body)
             mail.send(msg)
         
-        conn.execute("UPDATE applications SET status = ? WHERE id = ?", (status, application_id))
-        conn.commit()
+        application = Application.query.get(application_id)
+        application.status = status
+        db.session.commit()
         return jsonify({'message': f'Candidate status updated to {status}.'})
     except Exception as e:
         return jsonify({'error': f'Failed to send email: {e}.'}), 500
-    finally: conn.close()
 
 @app.route('/api/download_report/<int:application_id>')
 def download_report(application_id):
     if 'admin_id' not in session: return "Unauthorized", 401
-    conn = get_db()
-    candidate = conn.execute("SELECT a.report_path FROM applications a JOIN jobs j ON a.job_id = j.id WHERE a.id = ? AND j.admin_id = ?", (application_id, session['admin_id'])).fetchone()
-    conn.close()
-    if candidate and candidate['report_path'] and os.path.exists(candidate['report_path']):
-        return Response(open(candidate['report_path'], 'rb'), mimetype='application/pdf', headers={'Content-Disposition': f'attachment;filename=report_application_{application_id}.pdf'})
+    
+    report = db.session.query(Application.report_path).join(Job).filter(
+        Application.id == application_id,
+        Job.admin_id == session['admin_id']
+    ).first()
+    
+    if report and report.report_path and os.path.exists(report.report_path):
+        return Response(
+            open(report.report_path, 'rb'),
+            mimetype='application/pdf',
+            headers={'Content-Disposition': f'attachment;filename=report_application_{application_id}.pdf'}
+        )
     return "Report not found.", 404
 
 # ==============================================================================
@@ -295,46 +389,71 @@ def download_report(application_id):
 @app.route('/api/jobs')
 def get_jobs():
     if session.get('user_type') != 'candidate': return jsonify({'error': 'Unauthorized'}), 401
-    conn = get_db()
-    jobs = conn.execute("SELECT j.id, j.title, j.description, a.company_name FROM jobs j JOIN admins a ON j.admin_id = a.id ORDER BY j.id DESC").fetchall()
-    conn.close()
-    return jsonify([dict(job) for job in jobs])
+    
+    jobs = db.session.query(
+        Job.id,
+        Job.title,
+        Job.description,
+        Admin.company_name
+    ).join(Admin).order_by(Job.id.desc()).all()
+    
+    return jsonify([{
+        'id': job.id,
+        'title': job.title,
+        'description': job.description,
+        'company_name': job.company_name
+    } for job in jobs])
 
 @app.route('/api/apply/<int:job_id>', methods=['POST'])
 def apply_to_job(job_id):
     if session.get('user_type') != 'candidate': return jsonify({'error': 'Unauthorized'}), 401
     data = request.json
-    conn = get_db()
-    existing = conn.execute("SELECT id FROM applications WHERE candidate_id = ? AND job_id = ?", (session['candidate_id'], job_id)).fetchone()
+    
+    existing = Application.query.filter_by(
+        candidate_id=session['candidate_id'],
+        job_id=job_id
+    ).first()
+    
     if existing:
-        conn.close()
         return jsonify({'error': 'You have already applied to this job.'}), 409
     
-    conn.execute("INSERT INTO applications (candidate_id, job_id, resume_text) VALUES (?, ?, ?)",
-                 (session['candidate_id'], job_id, data['resume_text']))
-    conn.commit()
-    conn.close()
+    application = Application(
+        candidate_id=session['candidate_id'],
+        job_id=job_id,
+        resume_text=data['resume_text']
+    )
+    db.session.add(application)
+    db.session.commit()
     return jsonify({'message': 'Application submitted successfully.'})
     
 @app.route('/api/candidate/applications')
 def get_candidate_applications():
     if session.get('user_type') != 'candidate': return jsonify({'error': 'Unauthorized'}), 401
-    conn = get_db()
-    apps = conn.execute("""
-        SELECT a.id, a.status, a.report_path, j.title, adm.company_name
-        FROM applications a
-        JOIN jobs j ON a.job_id = j.id
-        JOIN admins adm ON j.admin_id = adm.id
-        WHERE a.candidate_id = ? ORDER BY a.id DESC
-    """, (session['candidate_id'],)).fetchall()
-    conn.close()
-    return jsonify([dict(app) for app in apps])
+    
+    # Explicitly select from Application to avoid ambiguous joins
+    applications = db.session.query(
+        Application.id,
+        Application.status,
+        Application.report_path,
+        Job.title,
+        Admin.company_name
+    ).select_from(Application).join(Job).join(Admin).filter(
+        Application.candidate_id == session['candidate_id']
+    ).order_by(Application.id.desc()).all()
+    
+    return jsonify([{
+        'id': app.id,
+        'status': app.status,
+        'report_path': app.report_path,
+        'title': app.title,
+        'company_name': app.company_name
+    } for app in applications])
     
 def generate_questions_for_job(job, skills):
     if not model: return {"error": "AI model not configured."}
     try:
         prompt = f"""Act as an expert technical hiring manager. Generate 5 targeted interview questions...
-        **Job Requirements:**\n{job['description']}\n
+        **Job Requirements:**\n{job.description}\n
         **Candidate's Skills:**\n{skills}\n
         Provide a valid JSON with a key "questions" holding an array of 5 strings."""
         response = model.generate_content(prompt)
@@ -348,22 +467,23 @@ def generate_questions_for_job(job, skills):
 def start_interview():
     data = request.json
     application_id = data.get('application_id')
-    conn = get_db()
-    app_data = conn.execute("SELECT j.description, a.resume_text FROM applications a JOIN jobs j ON a.job_id = j.id WHERE a.id = ?", (application_id,)).fetchone()
+    
+    app_data = db.session.query(
+        Job.description,
+        Application.resume_text
+    ).join(Job).filter(Application.id == application_id).first()
     if not app_data: 
-        conn.close()
         return jsonify({'error': 'Invalid interview link.'}), 404
     
     # store interview context in session
     session['application_id'] = application_id
-    session['job_requirements'] = app_data['description']
+    session['job_requirements'] = app_data.description
     # initialize proctoring counters/flags for tab switching detection
     session['tab_switch_count'] = 0
     session['proctoring_flags'] = []
     session['last_tab_switch_ts'] = None
-    conn.close()
     
-    questions_data = generate_questions_for_job({'description': app_data['description']}, app_data['resume_text'])
+    questions_data = generate_questions_for_job(app_data, app_data.resume_text)
     return jsonify(questions_data)
 
 
@@ -400,14 +520,13 @@ def proctor_tab_switch():
 
         # terminate on threshold
         if count >= 3:
-            conn = get_db()
-            try:
+            application = Application.query.get(session['application_id'])
+            if application:
                 snapshot = json.dumps({'termination_reason': 'Excessive tab switching', 'proctoring_flags': flags})
-                conn.execute("UPDATE applications SET status = ?, interview_results = ? WHERE id = ?",
-                             ('Terminated', snapshot, session['application_id']))
-                conn.commit()
-            finally:
-                conn.close()
+                application.status = 'Terminated'
+                application.interview_results = snapshot
+                db.session.commit()
+            
             session.clear()
             return jsonify({'message': 'Candidate terminated due to repeated tab switching.', 'terminated': True}), 200
 
