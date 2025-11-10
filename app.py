@@ -20,6 +20,7 @@ from sqlalchemy import create_engine, text
 load_dotenv()
 
 from datetime import datetime  # Add this import at the top
+from urllib.parse import urlparse
 
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'your-secret-key-here')  # Change this!
@@ -73,7 +74,16 @@ def get_database_url():
     if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql://", 1)
 
-    print(f"Database URL detected: {database_url.split('@')[1] if '@' in database_url else 'local'}")
+    # Validate host: prevent accidental localhost DB usage in production
+    parsed = urlparse(database_url)
+    host = parsed.hostname
+    if host in ("localhost", "127.0.0.1", "::1") and not (flask_debug or flask_env == 'development'):
+        raise RuntimeError(
+            "DATABASE_URL resolves to a localhost address in a non-development environment. "
+            "On Render this usually means the DATABASE_URL env var was not populated or was set incorrectly."
+        )
+
+    print(f"Database host detected: {host if host else 'unknown'}")
     return database_url
 
 # Configure SQLAlchemy with better connection handling
