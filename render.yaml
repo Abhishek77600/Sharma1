@@ -1,14 +1,35 @@
 services:
+  # PostgreSQL database
+  - type: pserv
+    name: interview-db
+    env: docker
+    plan: free
+    disk:
+      name: data
+      mountPath: /var/lib/postgresql/data
+      sizeGB: 1
+    envVars:
+      - key: POSTGRES_DB
+        value: hiring_platform
+      - key: POSTGRES_USER
+        generateValue: true
+      - key: POSTGRES_PASSWORD
+        generateValue: true
+
+  # Web application
   - type: web
     name: interview-platform
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
       - key: DATABASE_URL
-        sync: false
+        fromService:
+          type: pserv
+          name: interview-db
+          property: connectionString
       - key: FLASK_SECRET_KEY
         generateValue: true
       - key: MAIL_SERVER
@@ -16,10 +37,12 @@ services:
       - key: MAIL_PORT
         sync: false
       - key: MAIL_USE_TLS
-        sync: false
+        value: "True"
       - key: MAIL_USERNAME
         sync: false
       - key: MAIL_PASSWORD
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+    healthCheckPath: /
+    autoDeploy: true

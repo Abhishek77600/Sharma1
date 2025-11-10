@@ -24,11 +24,23 @@ REPORT_FOLDER = 'reports'
 os.makedirs(REPORT_FOLDER, exist_ok=True)
 
 # --- Database Configuration ---
-DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/hiring_platform')
+DATABASE_URL = os.getenv('DATABASE_URL')
+if not DATABASE_URL:
+    raise ValueError("No DATABASE_URL environment variable set. Please configure your database connection.")
+
+# Convert postgres:// to postgresql:// (Render uses postgres://)
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# Configure SQLAlchemy
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,  # Enable connection health checks
+    'pool_recycle': 300,    # Recycle connections every 5 minutes
+    'pool_timeout': 30,     # Wait up to 30 seconds for a connection
+    'max_overflow': 10      # Allow up to 10 extra connections
+}
 db = SQLAlchemy(app)
 
 # --- Email Configuration ---
@@ -77,9 +89,25 @@ class Application(db.Model):
     report_path = db.Column(db.String())
     interview_results = db.Column(db.Text)
 
-# Create database tables
-with app.app_context():
-    db.create_all()
+# Create database tables with retry logic
+def init_db(retries=5, delay=2):
+    import time
+    for attempt in range(retries):
+        try:
+            with app.app_context():
+                db.create_all()
+                print("Database tables created successfully!")
+                return
+        except Exception as e:
+            if attempt + 1 == retries:
+                print(f"Failed to create database tables after {retries} attempts: {e}")
+                raise
+            print(f"Database initialization attempt {attempt + 1} failed, retrying in {delay} seconds...")
+            time.sleep(delay)
+            delay *= 2  # Exponential backoff
+
+# Initialize database
+init_db()
 
 # --- Gemini API Configuration ---
 try:
