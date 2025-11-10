@@ -54,15 +54,25 @@ def get_database_url():
     """Get database URL with fallback for development"""
     database_url = os.getenv('DATABASE_URL')
     
+    # Allow local fallback only in explicit development mode
+    flask_debug = os.getenv('FLASK_DEBUG', 'False').lower() in ['true', '1', 'on']
+    flask_env = os.getenv('FLASK_ENV', '').lower()
+
     if not database_url:
-        # Development fallback
-        print("WARNING: No DATABASE_URL found. Using default local database for development.")
-        return 'postgresql://postgres:postgres@localhost:5432/hiring_platform'
-    
-    # Handle Render's DATABASE_URL format
+        if flask_debug or flask_env == 'development':
+            # Development fallback
+            print("WARNING: No DATABASE_URL found. Using default local database for development.")
+            return 'postgresql://postgres:postgres@localhost:5432/hiring_platform'
+        # In production, fail fast so Render doesn't try to connect to localhost
+        raise RuntimeError(
+            "DATABASE_URL environment variable is missing. In production this must be set. "
+            "On Render, ensure the DATABASE_URL env var is configured and the database service is linked."
+        )
+
+    # Handle Render's DATABASE_URL format (postgres:// -> postgresql://)
     if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql://", 1)
-    
+
     print(f"Database URL detected: {database_url.split('@')[1] if '@' in database_url else 'local'}")
     return database_url
 
