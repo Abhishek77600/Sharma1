@@ -5,7 +5,6 @@ Requires SENDGRID_API_KEY and MAIL_DEFAULT_SENDER environment variables.
 import os
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
-from sendgrid.exceptions import SendGridException
 
 
 def send_email(to_email, subject, body, html_body=None):
@@ -83,26 +82,34 @@ def send_email(to_email, subject, body, html_body=None):
                 print(f"ERROR: {error_msg}")
                 raise Exception(error_msg)
                 
-    except SendGridException as e:
-        # SendGrid-specific exceptions
+    except Exception as e:
+        # Handle all exceptions (SendGrid errors are regular exceptions)
         error_details = str(e)
+        error_type = type(e).__name__
+        
+        # Try to extract more details from the exception
         if hasattr(e, 'body') and e.body:
             try:
                 import json
                 error_body = json.loads(e.body) if isinstance(e.body, str) else e.body
                 error_details = f"{error_details} - Details: {error_body}"
             except:
-                error_details = f"{error_details} - Body: {e.body}"
+                try:
+                    error_details = f"{error_details} - Body: {e.body}"
+                except:
+                    pass
         
-        error_msg = f"SendGrid API error: {error_details}"
+        # Check if it's an HTTP error (common with SendGrid)
+        if hasattr(e, 'status_code'):
+            status_code = e.status_code
+            error_msg = f"SendGrid API error (HTTP {status_code}): {error_details}"
+        else:
+            error_msg = f"SendGrid API error ({error_type}): {error_details}"
+        
         print(f"ERROR: {error_msg}")
         print(f"  This usually means:")
         print(f"  1. API key is invalid or expired")
         print(f"  2. Sender email ({sender}) is not verified in SendGrid")
         print(f"  3. SendGrid account has restrictions")
-        raise Exception(error_msg)
-        
-    except Exception as e:
-        error_msg = f"Unexpected error sending email: {type(e).__name__}: {str(e)}"
-        print(f"ERROR: {error_msg}")
+        print(f"  4. Network/connection issue")
         raise Exception(error_msg)
