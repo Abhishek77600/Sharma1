@@ -145,6 +145,19 @@ with app.app_context():
 # --- Email Configuration (Resend API only) ---
 app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_DEFAULT_SENDER', 'noreply@example.com')
 
+# Initialize Resend client
+RESEND_API_KEY = os.getenv('RESEND_API_KEY')
+resend_client = None
+if RESEND_API_KEY:
+    try:
+        from resend import Resend
+        resend_client = Resend(RESEND_API_KEY)
+        print("✓ Resend email client initialized successfully")
+    except Exception as e:
+        print(f"⚠ Warning: Failed to initialize Resend client: {e}")
+else:
+    print("⚠ RESEND_API_KEY not set — email sending will fail")
+
 def send_email(to_email, subject, body, html_body=None):
     """Send an email via Resend API (HTTPS-based, reliable on Render).
     Requires RESEND_API_KEY env var to be set.
