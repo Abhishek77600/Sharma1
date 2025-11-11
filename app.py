@@ -430,8 +430,9 @@ def send_invite(application_id):
     subject = f"Interview Invitation for the {app_data.title} role"
     body = f"""Dear Candidate,\n\nCongratulations! Your application for the {app_data.title} position has been shortlisted.\nPlease use the following link to complete your AI-proctored virtual interview:\n{interview_link}\n\nBest of luck!\nThe {session['company_name']} Hiring Team"""
     try:
-        msg = Message(subject, recipients=[app_data.email], body=body)
-        mail.send(msg)
+        # Use centralized helper (prefers SendGrid Web API; falls back to SMTP)
+
+        send_email(app_data.email, subject, body)
         application = Application.query.get(application_id)
         application.status = 'Invited'
         db.session.commit()
@@ -463,8 +464,9 @@ def update_status(application_id):
         if status == 'Accepted' and mail:
             subject = "Update on your application"
             body = f"Congratulations! We would like to invite you to our office for the next round of interviews for the {app_data.title} role."
-            msg = Message(subject, recipients=[app_data.email], body=body)
-            mail.send(msg)
+            # Use centralized helper (prefers SendGrid Web API; falls back to SMTP)
+
+            send_email(app_data.email, subject, body)
         
         application = Application.query.get(application_id)
         application.status = status
