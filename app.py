@@ -11,7 +11,6 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.colors import navy, black, red
-from flask_mail import Mail, Message
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import create_engine, text
 
@@ -129,7 +128,6 @@ app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True').lower() in ['true
 app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
 app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
 app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_DEFAULT_SENDER', app.config['MAIL_USERNAME'])
-mail = Mail(app)
 
 # --- Database Models ---
 class Admin(db.Model):
