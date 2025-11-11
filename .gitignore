@@ -20,8 +20,6 @@ env/
 instance/
 .webassets-cache
 *.db
-*.sqlite3
-hiring_platform.db
 
 # Generated files
 reports/
