@@ -32,15 +32,9 @@ services:
           property: connectionString
       - key: FLASK_SECRET_KEY
         generateValue: true
-      - key: MAIL_SERVER
+      - key: SENDGRID_API_KEY
         sync: false
-      - key: MAIL_PORT
-        sync: false
-      - key: MAIL_USE_TLS
-        value: "True"
-      - key: MAIL_USERNAME
-        sync: false
-      - key: MAIL_PASSWORD
+      - key: MAIL_DEFAULT_SENDER
         sync: false
       - key: GEMINI_API_KEY
         sync: false

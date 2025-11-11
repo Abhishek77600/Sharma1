@@ -12,7 +12,6 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.colors import navy, black, red
-from flask_mail import Mail, Message
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import create_engine, text
 
@@ -24,7 +23,7 @@ from email_helper import send_email
 from urllib.parse import urlparse
 
 app = Flask(__name__)
-app.secret_key = os.getenv('SECRET_KEY', 'your-secret-key-here')  # Change this!
+app.config['SECRET_KEY'] = os.getenv("FLASK_SECRET_KEY", os.urandom(24))
 
 @app.route('/health')
 def health_check():
@@ -46,8 +45,6 @@ def health_check():
             'database_url': app.config['SQLALCHEMY_DATABASE_URI'].split('@')[1] if '@' in app.config['SQLALCHEMY_DATABASE_URI'] else 'local',
             'timestamp': datetime.utcnow().isoformat()
         }), 500
-app = Flask(__name__)
-app.config['SECRET_KEY'] = os.getenv("FLASK_SECRET_KEY", os.urandom(24))
 REPORT_FOLDER = 'reports'
 os.makedirs(REPORT_FOLDER, exist_ok=True)
 
@@ -124,13 +121,8 @@ with app.app_context():
         raise
 
 # --- Email Configuration ---
-app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER')
-app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
-app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True').lower() in ['true', 'on', '1']
-app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
-app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
-app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_DEFAULT_SENDER', app.config['MAIL_USERNAME'])
-mail = Mail(app)
+# Email sending is handled by email_helper.py using SendGrid API
+# Required environment variables: SENDGRID_API_KEY and MAIL_DEFAULT_SENDER
 
 # --- Database Models ---
 class Admin(db.Model):
@@ -417,7 +409,6 @@ def shortlist_candidates(job_id):
 @app.route('/api/admin/send_invite/<int:application_id>', methods=['POST'])
 def send_invite(application_id):
     if session.get('user_type') != 'admin': return jsonify({'error': 'Unauthorized'}), 401
-    if not mail: return jsonify({'error': 'Email server is not configured.'}), 500
     
     # Explicitly select from Application and join Candidate and Job to avoid ambiguity
     app_data = db.session.query(
@@ -431,8 +422,7 @@ def send_invite(application_id):
     subject = f"Interview Invitation for the {app_data.title} role"
     body = f"""Dear Candidate,\n\nCongratulations! Your application for the {app_data.title} position has been shortlisted.\nPlease use the following link to complete your AI-proctored virtual interview:\n{interview_link}\n\nBest of luck!\nThe {session['company_name']} Hiring Team"""
     try:
-        # Use centralized helper (prefers SendGrid Web API; falls back to SMTP)
-
+        # Use SendGrid API via email_helper
         send_email(app_data.email, subject, body)
         application = Application.query.get(application_id)
         application.status = 'Invited'
@@ -462,11 +452,10 @@ def update_status(application_id):
     if not app_data: return jsonify({'error': 'Application not found.'}), 404
 
     try:
-        if status == 'Accepted' and mail:
+        if status == 'Accepted':
             subject = "Update on your application"
             body = f"Congratulations! We would like to invite you to our office for the next round of interviews for the {app_data.title} role."
-            # Use centralized helper (prefers SendGrid Web API; falls back to SMTP)
-
+            # Use SendGrid API via email_helper
             send_email(app_data.email, subject, body)
         
         application = Application.query.get(application_id)
@@ -756,10 +745,13 @@ def generate_final_report():
         report_path = os.path.join(REPORT_FOLDER, f'report_application_{application_id}.pdf')
         with open(report_path, 'wb') as f: f.write(buffer.getvalue())
             
-        conn = get_db()
-        conn.execute("UPDATE applications SET report_path = ?, status = 'Completed', interview_results = ? WHERE id = ?", (report_path, json.dumps(interview_results), application_id))
-        conn.commit()
-        conn.close()
+        # Update application with report path and results
+        application = Application.query.get(application_id)
+        if application:
+            application.report_path = report_path
+            application.status = 'Completed'
+            application.interview_results = json.dumps(interview_results)
+            db.session.commit()
 
         session.clear()
         return jsonify({'message': 'Interview submitted successfully.'})
