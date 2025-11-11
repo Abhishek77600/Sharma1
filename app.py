@@ -19,7 +19,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from datetime import datetime  # Add this import at the top
-from email_helper import send_email
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from urllib.parse import urlparse
 
 app = Flask(__name__)
@@ -122,6 +124,7 @@ with app.app_context():
         print(f"Database connection test failed: {str(e)}")
         raise
 
+
 # --- Email Configuration ---
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER')
 app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
@@ -129,6 +132,40 @@ app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True').lower() in ['true
 app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
 app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
 app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_DEFAULT_SENDER', app.config['MAIL_USERNAME'])
+
+def send_email(to_email, subject, body, html_body=None):
+    """Send an email via SMTP. Returns True on success, raises on failure."""
+    mail_server = app.config['MAIL_SERVER']
+    mail_port = app.config['MAIL_PORT']
+    mail_username = app.config['MAIL_USERNAME']
+    mail_password = app.config['MAIL_PASSWORD']
+    sender = app.config['MAIL_DEFAULT_SENDER']
+    use_tls = app.config['MAIL_USE_TLS']
+
+    if not mail_server or not mail_username or not mail_password:
+        raise RuntimeError('Email not configured. Set MAIL_SERVER, MAIL_USERNAME, MAIL_PASSWORD, MAIL_DEFAULT_SENDER env vars')
+
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = subject
+    msg['From'] = sender
+    msg['To'] = to_email
+    msg.attach(MIMEText(body, 'plain'))
+    if html_body:
+        msg.attach(MIMEText(html_body, 'html'))
+
+    try:
+        with smtplib.SMTP(mail_server, mail_port, timeout=20) as server:
+            server.ehlo()
+            if use_tls:
+                server.starttls()
+                server.ehlo()
+            server.login(mail_username, mail_password)
+            server.send_message(msg)
+        print(f"Email sent to {to_email} via SMTP")
+        return True
+    except Exception as e:
+        print(f"SMTP send error: {e}")
+        raise
 
 # --- Database Models ---
 class Admin(db.Model):
