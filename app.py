@@ -434,15 +434,6 @@ def shortlist_candidates(job_id):
         **Job Description:**
         {job.description}
 
-    RESEND_API_KEY = os.getenv('RESEND_API_KEY')
-    resend_client = None
-    if RESEND_API_KEY:
-        try:
-            from resend import Resend
-            resend_client = Resend(RESEND_API_KEY)
-            print("Resend client configured")
-        except Exception as e:
-            print(f"Warning: failed to configure Resend client: {e}")
         **Candidate Resume:**
         {app.resume_text}
         """
